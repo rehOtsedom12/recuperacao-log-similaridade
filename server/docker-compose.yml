@@ -1,0 +1,17 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.1
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false  # Desativa login/senha para facilitar dev local
+      - xpack.security.http.ssl.enabled=false # Desativa HTTPS
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # Limita memória (ajuste se necessário)
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+volumes:
+  es_data:
+    driver: local
