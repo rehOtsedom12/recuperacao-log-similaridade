@@ -93,8 +93,3 @@ Confirme os scripts exatos abrindo `teste/package.json`.
 
 ---
 
-Se quiser, eu posso:
-
-- ajustar o README com comandos e endereços específicos do seu `traefik.yml` e `docker-compose.yml` (se você me permitir abrir esses arquivos);
-- adicionar um `README.md` na raiz com instruções para toda a stack.
-
