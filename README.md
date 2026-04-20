@@ -1,95 +1,243 @@
-# Recuperação de Log por Similaridade
+# 🔍 Recuperação de Logs por Similaridade
 
-Este repositório contém uma configuração de exemplo para executar um frontend (aplicação Vite/React) junto com o Traefik como proxy reverso via Docker Compose. O objetivo deste README é fornecer os pré-requisitos, instruções para iniciar o ambiente em desenvolvimento e dicas de solução de problemas.
+> Encontre arquivos de log semelhantes a uma entrada de referência para acelerar a depuração de problemas em sistemas distribuídos.
 
-## Pré-requisitos
+---
 
-- Docker (versão recente) instalado e em execução
-- Docker Compose (v2 ou compatível) disponível como `docker compose` ou `docker-compose`
-- Node.js (recomendado >= 16) e npm (somente se for necessário rodar o frontend localmente sem Docker)
-- Acesso ao terminal (Linux/macOS/Windows WSL)
+## 📋 Sobre o Projeto
 
-> Observação: Este projeto contém um `docker-compose.yml` e um `traefik.yml` na raiz do workspace. Ajuste as rotas e certificados no `traefik.yml` conforme seu ambiente (ex.: redirecionamento HTTP/HTTPS, entradas de hosts, certificados ACME).
+Este projeto implementa um sistema de **recuperação de informação baseado em similaridade** aplicado a arquivos de log. Dado um log de referência (uma linha ou trecho), o sistema busca nos arquivos indexados aqueles cujo conteúdo é mais similar, ranqueando os resultados por relevância.
 
-## Estrutura do projeto (resumida)
+O objetivo é auxiliar engenheiros e desenvolvedores a identificar rapidamente **onde um determinado tipo de evento já ocorreu** em sistemas que geram grandes volumes de logs, acelerando o processo de depuração.
 
-- `docker-compose.yml` - define serviços Docker (provavelmente traefik e o serviço web)
-- `traefik.yml` - configuração do Traefik
-- `Dockerfile` - instruções de build do container (se aplicável)
-- `teste/` - código do frontend (Vite + React)
-	- `package.json` - dependências e scripts
-	- `vite.config.js`, `src/` - código fonte do frontend
+---
 
-## Como iniciar (via Docker Compose)
+## 🏗️ Arquitetura
 
-1. Abra um terminal na raiz do projeto (`/home/luizg/traefik-setup`).
-2. (Opcional) Ajuste `traefik.yml` e `docker-compose.yml` conforme suas necessidades (ports, redes, volumes, domínio).
-3. Inicie os serviços:
-
-```bash
-# usando o Docker Compose v2 (recomendado)
-docker compose up -d --build
-
-# ou, se você tiver o docker-compose clássico
-docker-compose up -d --build
+```
+┌─────────────────┐     HTTP      ┌─────────────────┐     REST API    ┌──────────────────────┐
+│                 │  ──────────►  │                 │  ────────────►  │                      │
+│   React (Vite)  │               │  Express (API)  │                 │   Elasticsearch 8.x  │
+│   Frontend      │  ◄──────────  │   porta 3001    │  ◄────────────  │   porta 9200         │
+│                 │   JSON        │                 │    BM25 nativo  │                      │
+└─────────────────┘               └─────────────────┘                 └──────────────────────┘
 ```
 
-4. Verifique os logs e o status dos containers:
+### Por que essa arquitetura?
 
-```bash
-docker compose ps
-docker compose logs -f
+A versão inicial do projeto implementava o algoritmo BM25 diretamente no browser (JavaScript puro). Essa abordagem tem limitações claras: o índice é perdido ao fechar a aba, fica limitado à RAM do navegador e não escala para grandes volumes. A migração para Elasticsearch resolve todos esses problemas:
+
+| Critério | BM25 no browser | Elasticsearch |
+|---|---|---|
+| Persistência do índice | ❌ Perdido ao fechar | ✅ Permanente em disco |
+| Volume suportado | ~MBs (RAM do browser) | Bilhões de documentos |
+| Velocidade | Linear (JS) | Índice invertido otimizado |
+| Highlight de trechos | Manual (regex) | Nativo |
+| Normalização de logs | Regex manual | `char_filter` configurável |
+
+---
+
+## 🧠 Como o BM25 Funciona Aqui
+
+O **BM25 (Best Match 25)** é o algoritmo de ranking padrão do Elasticsearch. Ele calcula a relevância de cada documento para uma query combinando:
+
+- **TF (Term Frequency)** — quantas vezes o termo aparece no arquivo, com saturação (mais ocorrências ajudam, mas com retorno decrescente)
+- **IDF (Inverse Document Frequency)** — penaliza termos muito comuns entre todos os arquivos
+- **Normalização por tamanho** — arquivos maiores não ganham vantagem injusta
+
+Antes da indexação, um **`log_analyzer` customizado** normaliza o conteúdo via `char_filter`, removendo variáveis que não carregam significado semântico:
+
+```
+192.168.1.10  →  (removido)
+07:32:51      →  (removido)  
+sshd[5506]    →  sshd
+port 22       →  (removido)
 ```
 
-5. Acesse a aplicação no host/porta configurada (ex.: http://localhost) ou via domínio configurado no Traefik.
+Isso garante que dois logs como:
+```
+Failed password for root from 192.168.1.1 port 22 ssh2
+Failed password for root from 10.0.0.5 port 2222 ssh2
+```
+sejam tratados como semanticamente idênticos.
 
-## Como rodar apenas o frontend localmente (sem Docker)
+---
 
-Se quiser desenvolver apenas o frontend localmente:
+## 🚀 Como Rodar
 
-1. Entre na pasta do frontend:
+### Pré-requisitos
 
-```bash
-cd teste
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) instalado e rodando
+- [Node.js](https://nodejs.org) v18 ou superior
+- npm
+
+### Estrutura esperada de pastas
+
+```
+recuperacao-log-similaridade/
+├── docker-compose.yml
+├── src/                        ← frontend React
+│   ├── App.jsx
+│   ├── main.jsx
+│   └── ...
+└── src/Api/                    ← backend Express
+    ├── server.js
+    └── package.json
 ```
 
-2. Instale dependências e rode em modo de desenvolvimento:
+### Passo 1 — Subir o Elasticsearch
+
+Na pasta raiz do projeto (onde está o `docker-compose.yml`):
 
 ```bash
+cd server
+docker compose up -d
+```
+
+Verifique se subiu:
+```bash
+curl http://localhost:9200
+# Deve retornar JSON com "tagline": "You Know, for Search"
+```
+
+### Passo 2 — Rodar a API
+
+```bash
+cd src/Api
 npm install
 npm run dev
 ```
 
-3. O Vite normalmente expõe a aplicação em `http://localhost:5173` (confirme o endereço no terminal).
+Saída esperada:
+```
+✅ Índice 'log-files' criado com log_analyzer
+🚀 API rodando em http://localhost:3001
+```
 
-Se estiver usando o frontend localmente e o Traefik em Docker, ajuste as URLs de API e CORS conforme necessário.
+Verifique o status:
+```
+GET http://localhost:3001/api/health
+```
 
-## Scripts úteis (prováveis) em `teste/package.json`
+### Passo 3 — Rodar o Frontend
 
-- `npm run dev` - inicia o servidor de desenvolvimento Vite
-- `npm run build` - cria o build de produção em `dist/`
-- `npm run preview` - pré-visualiza o build de produção localmente
+```bash
+cd src
+npm install
+npm run dev
+```
 
-Confirme os scripts exatos abrindo `teste/package.json`.
-
-## Dicas de troubleshooting
-
-- Se o Traefik não encaminhar para o serviço, verifique os labels no `docker-compose.yml` do serviço web e as entradas em `traefik.yml`.
-- Verifique se as portas usadas não estão em conflito com outros serviços.
-- Se o container não sobe, veja os logs com `docker compose logs <service>`.
-- Se o frontend não atualiza mudanças durante desenvolvimento, confirme que está rodando `npm run dev` dentro da pasta `teste`.
-
-## Segurança e produção
-
-- Nunca exponha portas administrativas do Traefik sem autenticação.
-- Configure certificados TLS (Let's Encrypt via ACME ou certificados próprios) no `traefik.yml`.
-- Para produção, use volumes para persistir certificados e dados necessários.
-
-## Próximos passos sugeridos
-
-- Adicionar documentação de como configurar domínios e certificados no Traefik.
-- Incluir exemplos de `docker-compose.override.yml` para desenvolvimento.
-- Escrever instruções de deploy contínuo (CI/CD).
+Acesse **http://localhost:5173** no navegador.
 
 ---
 
+## 📡 Endpoints da API
+
+### `GET /api/health`
+Retorna o status do cluster Elasticsearch e o total de documentos indexados.
+
+```json
+{ "status": "green", "documents": 42 }
+```
+
+---
+
+### `POST /api/upload`
+Indexa um ou mais arquivos de log. Aceita `multipart/form-data`.
+
+**Campo:** `files` (múltiplos arquivos `.log`, `.txt`, `.csv`)
+
+```json
+{
+  "success": true,
+  "files": [
+    { "filename": "auth.log", "action": "indexed", "lineCount": 2048 },
+    { "filename": "syslog.log", "action": "updated", "lineCount": 15420 }
+  ]
+}
+```
+
+`action` pode ser `"indexed"` (novo) ou `"updated"` (já existia, foi substituído).
+
+---
+
+### `GET /api/files`
+Lista todos os arquivos atualmente indexados no Elasticsearch.
+
+```json
+{
+  "files": [
+    {
+      "id": "abc123",
+      "filename": "auth.log",
+      "line_count": 2048,
+      "file_size": 204800,
+      "uploaded_at": "2024-04-24T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/search`
+Busca arquivos similares ao log de referência usando BM25.
+
+**Body:**
+```json
+{
+  "query": "Failed password for root from 192.168.1.1 port 22 ssh2",
+  "size": 10
+}
+```
+
+**Resposta:**
+```json
+{
+  "total": 3,
+  "max_score": 14.72,
+  "hits": [
+    {
+      "id": "abc123",
+      "filename": "auth.log",
+      "line_count": 2048,
+      "file_size": 204800,
+      "score": 14.72,
+      "highlights": [
+        {
+          "text": "Dec 10 07:33:02 LabSZ sshd: Failed password for root from port ssh2",
+          "marked": "Dec 10 07:33:02 LabSZ sshd: <<<Failed password>>> for <<<root>>>"
+        }
+      ]
+    }
+  ]
+}
+```
+
+O campo `highlights` contém os trechos do arquivo com maior sobreposição com a query, já extraídos pelo Elasticsearch.
+
+---
+
+### `DELETE /api/files/:id`
+Remove um arquivo do índice pelo seu ID.
+
+```json
+{ "success": true }
+```
+
+---
+
+## 🛠️ Stack Tecnológica
+
+| Camada | Tecnologia |
+|---|---|
+| Frontend | React 18 + Vite |
+| Backend | Node.js + Express |
+| Motor de busca | Elasticsearch 8.12 |
+| Containerização | Docker + Docker Compose |
+| Algoritmo de ranking | BM25 (nativo do Elasticsearch) |
+---
+
+## 📄 Licença
+
+Este projeto é desenvolvido para fins acadêmicos na **Universidade Federal do Amazonas (UFAM)** — disciplina de Recuperação de Informações.
